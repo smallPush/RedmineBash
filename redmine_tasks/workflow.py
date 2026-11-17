@@ -12,6 +12,7 @@ import tempfile
 from .cli import assignee, custom_field, due_date, issue_fields, normalize, resolve, safe_text
 from .config import TaskError
 from .review import review_draft
+from .ui import Style, progress_bar
 
 
 class Cancelled(Exception):
@@ -23,7 +24,9 @@ def say(text):
 
 
 def ask(prompt, default=""):
-    say(prompt + (f" [{default}]" if default else "") + ":")
+    style = Style(sys.stderr)
+    default_hint = style.dim(f" [{default}]") if default else ""
+    say(style.bold(prompt) + default_hint + ":")
     value = input().strip()
     if value == ":cancel":
         raise Cancelled
@@ -33,17 +36,21 @@ def ask(prompt, default=""):
 def choose(items, label, default_id=None, search=False):
     if not items:
         raise TaskError(f"No hi ha opcions disponibles: {label}.")
+    style = Style(sys.stderr)
     query = ask("Cerca un projecte (Enter per veure’ls tots)") if search else ""
     while True:
         matches = [item for item in items if normalize(query) in
                    normalize(f"{item['name']} {item.get('identifier', '')}")]
         if not matches:
-            say("No s’ha trobat cap coincidència.")
+            say(style.warn("No s’ha trobat cap coincidència."))
             query = ask("Cerca un projecte")
             continue
         default = ""
+        width = len(str(len(matches)))
         for index, item in enumerate(matches, 1):
-            say(f"{index}. {item['name']} [ID {item['id']}]")
+            num = style.cyan(f"{index:>{width}}.")
+            item_id = style.dim(f"[ID {item['id']}]")
+            say(f"  {num} {item['name']} {item_id}")
             if item["id"] == default_id:
                 default = str(index)
         value = ask(label + (" (número o text de cerca)" if search else " (número)"), default)
@@ -52,7 +59,7 @@ def choose(items, label, default_id=None, search=False):
         if search and value and not value.isdecimal():
             query = value
         else:
-            say("Selecciona un número de la llista.")
+            say(style.warn("Selecciona un número de la llista."))
 
 
 def edit_description(original):
@@ -106,15 +113,19 @@ def edit_text(args):
 
 
 def apply_review(args, project):
-    say("Revisant el títol i la descripció amb Codex…")
+    style = Style(sys.stderr)
+    say(style.info("Revisant el títol i la descripció amb Codex…"))
     try:
         proposal = review_draft(args.title, args.description or "", project)
     except TaskError as exc:
-        say(f"Error: {exc}")
+        say(style.err(f"Error: {exc}"))
         return
-    say(f"\nTítol proposat: {proposal['title']}\n\n{proposal['description']}")
+    say("\n" + style.heading("Proposta de revisió"))
+    say(style.rule(40))
+    say(style.bold("Títol proposat: ") + proposal["title"])
+    say("\n" + proposal["description"])
     for warning in proposal["warnings"]:
-        say(f"Pendent de concretar: {warning}")
+        say(style.warn(f"Pendent de concretar: {warning}"))
     while True:
         action = ask("[a] Aplica la proposta · [d] Descarta-la", "d").casefold()
         if action == "a":
@@ -123,7 +134,7 @@ def apply_review(args, project):
             return
         if action == "d":
             return
-        say("Tria a o d.")
+        say(style.warn("Tria a o d."))
 
 
 def edit_fields(args, project):
@@ -149,13 +160,23 @@ def edit_fields(args, project):
 
 
 def preview(args, project, tracker, priority):
-    say("\nRevisa la tasca abans de continuar:")
-    say(f"Projecte: {project['name']} [ID {project['id']}]\nTipus: {tracker['name']}")
-    say(f"Prioritat: {priority['name']}\nAssignat: {args.assignee}\nVenciment: {args.due_date or 'sense data'}")
-    say(f"Completat (%): {args.progress if args.progress is not None else 0}")
-    say(f"Títol: {args.title}\n\nDescripció:\n{args.description or '(buida)'}")
+    style = Style(sys.stderr)
+    say("\n" + style.heading("Revisa la tasca abans de continuar:"))
+    say(style.rule(44))
+    project_id = style.dim(f"[ID {project['id']}]")
+    say(f"  {style.dim('Projecte:'.ljust(12))} {project['name']} {project_id}")
+    say(f"  {style.dim('Tipus:'.ljust(12))} {tracker['name']}")
+    say(f"  {style.dim('Prioritat:'.ljust(12))} {style.priority(priority['name'])}")
+    say(f"  {style.dim('Assignat:'.ljust(12))} {args.assignee}")
+    say(f"  {style.dim('Venciment:'.ljust(12))} {args.due_date or style.dim('sense data')}")
+    done = args.progress if args.progress is not None else 0
+    say(f"  {style.dim('Completat:'.ljust(12))} {progress_bar(done, style=style)}")
+    say(f"  {style.dim('Títol:'.ljust(12))} {style.bold(args.title)}")
+    say("\n" + style.bold("Descripció:"))
+    say(args.description or style.dim("(buida)"))
     for field in args.field or []:
-        say(f"Camp {field['id']}: {field['value']}")
+        field_label = style.dim(f"Camp {field['id']}:")
+        say(f"  {field_label} {field['value']}")
 
 
 def prepare_issue(args, client):

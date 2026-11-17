@@ -9,6 +9,7 @@ import unicodedata
 
 from .client import RedmineClient
 from .config import Config, TaskError
+from .ui import Style, progress_bar, render_table
 
 
 class HelpFormatter(argparse.HelpFormatter):
@@ -309,63 +310,130 @@ def named(value):
     return value.get("name", "—") if isinstance(value, dict) else value or "—"
 
 
-def display(data, command):
-    if command == "list":
-        print(f"{data['total']} {'tasca' if data['total'] == 1 else 'tasques'}")
-        for issue in data["issues"]:
-            print(safe_text(f"#{issue['id']} | {named(issue.get('status'))} | "
-                            f"{named(issue.get('priority'))} | {named(issue.get('project'))} | "
-                            f"{issue['subject']} | Venciment: {issue.get('due_date') or 'sense data'}"))
-    elif command == "projects":
-        for project in data["projects"]:
-            print(safe_text(f"{project['id']} | {project['identifier']} | {project['name']}"))
-    elif command == "show":
-        issue = data["issue"]
-        print(safe_text(f"#{issue['id']} — {issue['subject']}"))
-        for label, key in [("Projecte", "project"), ("Estat", "status"), ("Tipus", "tracker"),
-                           ("Prioritat", "priority"), ("Assignat", "assigned_to"),
-                           ("Venciment", "due_date"), ("Completat (%)", "done_ratio")]:
-            value = issue.get(key)
-            print(safe_text(f"{label}: {value if value == 0 else named(value)}"))
-        print("\nDescripció:\n" + safe_text(issue.get("description") or "(buida)"))
-        print("\nCamps personalitzats:")
-        for field in issue.get("custom_fields", []):
-            print(safe_text(f"{field['id']} — {field['name']}: {field.get('value', '')}"))
-        print("\nEstats permesos:")
-        for status in issue.get("allowed_statuses", []):
-            print(safe_text(f"{status['id']} — {status['name']}"))
-        print("\nHistorial i comentaris:")
-        for journal in issue.get("journals", []):
-            print(safe_text(f"{journal.get('created_on', '')} — {named(journal.get('user'))}"))
+def _display_list(data, style):
+    total = data["total"]
+    count_label = f"{total} {'tasca' if total == 1 else 'tasques'}"
+    print(style.heading(count_label))
+    if not data["issues"]:
+        print(style.dim("No s’han trobat tasques."))
+        return
+    rows = []
+    for issue in data["issues"]:
+        due = safe_text(issue.get("due_date") or "")
+        rows.append([
+            style.bold(f"#{issue['id']}"),
+            style.status(safe_text(named(issue.get("status")))),
+            style.priority(safe_text(named(issue.get("priority")))),
+            safe_text(named(issue.get("project"))),
+            due if due else style.dim("sense data"),
+            safe_text(issue["subject"]),
+        ])
+    headers = ["ID", "Estat", "Prioritat", "Projecte", "Venciment", "Títol"]
+    for line in render_table(headers, rows, style=style, flex_col=5):
+        print(line)
+
+
+def _display_show(issue, style):
+    print(style.heading(safe_text(f"#{issue['id']} — {issue['subject']}")))
+    print(style.rule())
+    for label, key in [("Projecte", "project"), ("Estat", "status"), ("Tipus", "tracker"),
+                       ("Prioritat", "priority"), ("Assignat", "assigned_to"),
+                       ("Venciment", "due_date")]:
+        value = safe_text(named(issue.get(key)))
+        if key == "status":
+            value = style.status(value)
+        elif key == "priority":
+            value = style.priority(value)
+        print(f"  {style.dim(f'{label:<14}')} {value}")
+    done = issue.get("done_ratio") or 0
+    print(f"  {style.dim('Completat'.ljust(14))} {progress_bar(done, style=style)}")
+
+    print("\n" + style.bold("Descripció"))
+    print(style.rule(40))
+    description = safe_text(issue.get("description") or "")
+    print(description if description.strip() else style.dim("(buida)"))
+
+    custom_fields = issue.get("custom_fields", [])
+    if custom_fields:
+        print("\n" + style.bold("Camps personalitzats"))
+        print(style.rule(40))
+        for field in custom_fields:
+            val = safe_text(field.get("value") or "—")
+            print(safe_text(f"  {style.dim(str(field['id']))} {field['name']}: {val}"))
+
+    allowed = issue.get("allowed_statuses", [])
+    if allowed:
+        print("\n" + style.bold("Estats permesos"))
+        print(style.rule(40))
+        for status in allowed:
+            print(safe_text(f"  {style.dim(str(status['id']))} {style.status(safe_text(status['name']))}"))
+
+    journals = issue.get("journals", [])
+    if journals:
+        print("\n" + style.bold("Historial i comentaris"))
+        print(style.rule(40))
+        for journal in journals:
+            header = safe_text(f"{journal.get('created_on', '')} — {named(journal.get('user'))}")
+            print(style.info(style.bold(header)))
             if journal.get("notes"):
-                print(safe_text(journal["notes"]))
+                for note_line in safe_text(journal["notes"]).splitlines():
+                    print(f"  {note_line}")
             for detail in journal.get("details", []):
-                print(safe_text(f"  {detail.get('name')}: {detail.get('old_value', '—')} → {detail.get('new_value', '—')}"))
+                old_v = safe_text(detail.get("old_value") or "—")
+                new_v = safe_text(detail.get("new_value") or "—")
+                print(safe_text(f"  {style.dim(detail.get('name', ''))}: {old_v} → {new_v}"))
+
+
+def display(data, command):
+    style = Style(sys.stdout)
+    if command == "list":
+        _display_list(data, style)
+    elif command == "projects":
+        projects = data["projects"]
+        print(style.heading(f"{len(projects)} {'projecte' if len(projects) == 1 else 'projectes'}"))
+        if not projects:
+            print(style.dim("No hi ha projectes disponibles."))
+            return
+        rows = [[style.bold(str(p["id"])), style.cyan(safe_text(p["identifier"])), safe_text(p["name"])]
+                for p in projects]
+        for line in render_table(["ID", "Identificador", "Nom"], rows, style=style, flex_col=2):
+            print(line)
+    elif command == "show":
+        _display_show(data["issue"], style)
     elif command == "catalogs":
         labels = {"statuses": "Estats", "priorities": "Prioritats",
                   "trackers": "Tipus", "fields": "Camps"}
         for group, items in data.items():
-            print(labels[group] + ":")
+            print(style.heading(labels[group]))
+            if not items:
+                print(style.dim("  (cap)"))
+                continue
             for item in items:
-                print(safe_text(f"  {item['id']} — {item['name']}"))
+                item_id = style.dim(str(item["id"]).rjust(4))
+                print(safe_text(f"  {item_id}  {item['name']}"))
     elif command == "review":
         proposal = data["review"]
-        print(safe_text(f"Títol proposat: {proposal['title']}\n\n{proposal['description']}"))
+        print(style.heading("Proposta de revisió"))
+        print(style.rule(40))
+        print(style.bold("Títol proposat: ") + safe_text(proposal["title"]))
+        print("\n" + safe_text(proposal["description"]))
         for warning in proposal["warnings"]:
-            print(safe_text(f"Pendent de concretar: {warning}"))
+            print(style.warn(safe_text(f"Pendent de concretar: {warning}")))
     elif data.get("dry_run"):
-        print("Simulació: no s’ha enviat cap canvi a Redmine.")
+        print(style.warn("Simulació: no s’ha enviat cap canvi a Redmine."))
         print(safe_text(json.dumps(data, ensure_ascii=False, indent=2)))
     elif command == "check":
         user = data["user"]
-        print(safe_text(f"Connexió correcta: {data['url']}"))
-        print(safe_text(f"Usuari: {user.get('firstname') or ''} {user.get('lastname') or ''} (ID {user['id']})"))
+        print(style.ok(safe_text(f"Connexió correcta: {data['url']}")))
+        full_name = f"{user.get('firstname') or ''} {user.get('lastname') or ''}".strip()
+        user_id = style.dim(f"(ID {user['id']})")
+        print(f"  {style.dim('Usuari:')} {safe_text(full_name)} {user_id}")
     elif "result" in data:
         if data["result"] == "cancelled":
-            print("Operació cancel·lada. No s’ha creat cap tasca.")
+            print(style.warn("Operació cancel·lada. No s’ha creat cap tasca."))
             return
         message = "Tasca creada" if data["result"] == "created" else "Tasca actualitzada"
-        print(safe_text(f"{message}: #{data['id']} — {data['url']}"))
+        print(style.ok(safe_text(f"{message}: #{data['id']} — {data['url']}")))
     else:
         print(safe_text(json.dumps(data, ensure_ascii=False, indent=2)))
 
@@ -390,7 +458,9 @@ def main(argv=None):
         message = str(exc)
         if "config" in locals():
             message = message.replace(config.token, "[ocult]")
-        print("Error: " + safe_text(message), file=sys.stderr)
+        err_style = Style(sys.stderr)
+        prefix = err_style.err("Error: ") if err_style.enabled else "Error: "
+        print(prefix + safe_text(message), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nOperació interrompuda.", file=sys.stderr)
