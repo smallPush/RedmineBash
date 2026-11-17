@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-RedmineBash is a Python 3.10+ CLI with no external dependencies. `tasks` is the primary executable; `tareas` preserves compatibility. `redmine_tasks/` contains configuration loading (`config.py`), HTTP requests and pagination (`client.py`), and commands and display (`cli.py`). `tests/` contains unittest tests with simulated responses. `README.md` documents setup and usage. No web frontend or static assets are required.
+RedmineBash is a Python 3.10+ CLI with no external Python dependencies. `tasks` is the primary executable; `tareas` preserves compatibility. `redmine_tasks/` contains configuration (`config.py`), HTTP requests (`client.py`), commands (`cli.py`), interactive creation (`workflow.py`), and optional Codex CLI review (`review.py`). `tests/` contains unittest tests with simulated responses. `README.md` documents setup and usage. No web frontend or static assets are required.
 
 ## Build, Test, and Development Commands
 

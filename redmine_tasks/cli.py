@@ -116,7 +116,7 @@ def parser():
                "edit": "editar", "comment": "comentar", "status": "estado"}
 
     def command(name, help_text):
-        item = commands.add_parser(name, aliases=[aliases[name]], help=help_text,
+        item = commands.add_parser(name, aliases=[aliases[name]] if name in aliases else [], help=help_text,
                                    description=help_text, parents=[common])
         item.set_defaults(command=name)
         return item
@@ -136,10 +136,12 @@ def parser():
     for name, help_text in [("create", "Crea una tasca"), ("edit", "Edita una tasca")]:
         item = command(name, help_text)
         if name == "create":
-            item.add_argument("--project", "--proyecto", required=True, help="ID o identificador del projecte")
+            item.add_argument("--project", "--proyecto", help="ID o identificador del projecte")
+            item.add_argument("--interactive", action="store_true", help="Obre l’assistent encara que s’indiquin tots els camps")
+            item.add_argument("--review", action="store_true", help="Proposa una revisió amb Codex abans de confirmar")
         else:
             item.add_argument("id", type=positive, help="ID de la tasca")
-        item.add_argument("--title", "--titulo", required=name == "create", help="Títol de la tasca")
+        item.add_argument("--title", "--titulo", help="Títol de la tasca")
         item.add_argument("--description", "--descripcion", help="Descripció de la tasca")
         item.add_argument("--tracker", "--tipo", default="Tasca" if name == "create" else None,
                           help="Nom o ID del tipus (per defecte: Tasca en crear)")
@@ -158,6 +160,10 @@ def parser():
     status.add_argument("id", type=positive, help="ID de la tasca")
     status.add_argument("name", help="Nom o ID de l’estat")
     status.add_argument("--dry-run", action="store_true", help="Mostra la petició sense enviar-la")
+    review = command("review", "Revisa un esborrany amb Codex sense crear cap tasca")
+    review.add_argument("--title", required=True, help="Títol de l’esborrany")
+    review.add_argument("--description", default="", help="Descripció de l’esborrany")
+    review.add_argument("--project", help="Projecte opcional per donar context a la revisió")
     return root
 
 
@@ -208,6 +214,29 @@ def issue_fields(args, client):
 
 
 def run(args, client):
+    review_result = None
+    if args.command == "review":
+        from .review import review_draft
+
+        project = client.project(args.project) if args.project else None
+        return {"review": review_draft(args.title, args.description, project)}
+    if args.command == "create":
+        interactive = (args.interactive or args.project is None or args.title is None
+                       or (args.review and not args.dry_run))
+        if interactive:
+            from .workflow import prepare_issue
+
+            if not sys.stdin.isatty():
+                raise TaskError("L’assistent requereix un terminal. Indica --project i --title; "
+                                "per revisar sense terminal, fes servir review o --review --dry-run.")
+            if not prepare_issue(args, client):
+                return {"result": "cancelled"}
+        elif args.review:
+            from .review import review_draft
+
+            review_result = review_draft(args.title, args.description or "", client.project(args.project))
+            args.title = review_result["title"]
+            args.description = review_result["description"]
     if args.command == "check":
         user = client.current_user()
         return {"url": client.config.url, "user": {
@@ -261,7 +290,10 @@ def run(args, client):
         fields = {"status_id": resolve(args.name, allowed, "Estat permès")}
     body = {"issue": fields}
     if args.dry_run:
-        return {"dry_run": True, "method": method, "path": path, "body": body}
+        result = {"dry_run": True, "method": method, "path": path, "body": body}
+        if review_result is not None:
+            result["review"] = review_result
+        return result
     response = client.request(method, path, body=body)
     issue_id = response["issue"]["id"] if args.command == "create" else args.id
     return {"result": "created" if args.command == "create" else "updated",
@@ -316,6 +348,11 @@ def display(data, command):
             print(labels[group] + ":")
             for item in items:
                 print(safe_text(f"  {item['id']} — {item['name']}"))
+    elif command == "review":
+        proposal = data["review"]
+        print(safe_text(f"Títol proposat: {proposal['title']}\n\n{proposal['description']}"))
+        for warning in proposal["warnings"]:
+            print(safe_text(f"Pendent de concretar: {warning}"))
     elif data.get("dry_run"):
         print("Simulació: no s’ha enviat cap canvi a Redmine.")
         print(safe_text(json.dumps(data, ensure_ascii=False, indent=2)))
@@ -324,6 +361,9 @@ def display(data, command):
         print(safe_text(f"Connexió correcta: {data['url']}"))
         print(safe_text(f"Usuari: {user.get('firstname') or ''} {user.get('lastname') or ''} (ID {user['id']})"))
     elif "result" in data:
+        if data["result"] == "cancelled":
+            print("Operació cancel·lada. No s’ha creat cap tasca.")
+            return
         message = "Tasca creada" if data["result"] == "created" else "Tasca actualitzada"
         print(safe_text(f"{message}: #{data['id']} — {data['url']}"))
     else:
@@ -336,8 +376,11 @@ def main(argv=None):
     if args.command is None:
         args = cli.parse_args([*(argv if argv is not None else sys.argv[1:]), "list"])
     try:
-        config = Config.load(getattr(args, "env_file", None))
-        result = run(args, RedmineClient(config))
+        client = None
+        if args.command != "review" or args.project:
+            config = Config.load(getattr(args, "env_file", None))
+            client = RedmineClient(config)
+        result = run(args, client)
         if getattr(args, "json", False):
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:

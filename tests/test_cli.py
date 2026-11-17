@@ -138,7 +138,7 @@ class CommandTests(unittest.TestCase):
 
     def test_help_is_catalan_for_root_and_subcommands(self):
         for command in ([], ["list"], ["show"], ["projects"], ["catalogs"],
-                        ["check"], ["create"], ["edit"], ["comment"], ["status"]):
+                        ["check"], ["create"], ["edit"], ["comment"], ["status"], ["review"]):
             with self.subTest(command=command), contextlib.redirect_stdout(io.StringIO()) as output:
                 with self.assertRaises(SystemExit) as caught:
                     parser().parse_args([*command, "--help"])
@@ -151,7 +151,7 @@ class CommandTests(unittest.TestCase):
                 self.assertNotIn("show this help message", text)
 
     def test_parser_diagnostics_are_catalan(self):
-        cases = [(["create"], "cal indicar els arguments següents"),
+        cases = [(["show"], "cal indicar els arguments següents"),
                  (["unknown"], "opció no vàlida"),
                  (["edit", "1", "--title"], "cal indicar un valor"),
                  (["list", "--unknown"], "arguments no reconeguts")]
